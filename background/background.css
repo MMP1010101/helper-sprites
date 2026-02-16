@@ -1,0 +1,79 @@
+/* Estilo pixelart muy vivo y agradable */
+body {
+    font-family: 'Press Start 2P', cursive;
+    background-color: #000;
+    color: #fff;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+}
+
+/* Background épico y místico */
+body:after {
+    content: "";
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: #c41e3a; /* Base red table color */
+    background-image: 
+        linear-gradient(rgba(220, 20, 60, 0.8) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(220, 20, 60, 0.8) 1px, transparent 1px),
+        linear-gradient(rgba(180, 0, 0, 0.5) 2px, transparent 2px),
+        linear-gradient(90deg, rgba(180, 0, 0, 0.5) 2px, transparent 2px);
+    background-size: 10px 10px, 10px 10px, 50px 50px, 50px 50px;
+    z-index: -1;
+    image-rendering: pixelated;
+    box-shadow: inset 0 0 80px 20px rgba(0,0,0,0.6);
+}
+
+/* Wood grain texture overlay for the table */
+body:before {
+    content: "";
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-image: repeating-linear-gradient(
+        45deg,
+        rgba(150, 0, 0, 0.3) 0px,
+        rgba(180, 20, 20, 0.3) 2px,
+        rgba(150, 0, 0, 0.3) 4px
+    );
+    z-index: -1;
+    image-rendering: pixelated;
+}
+
+/* Estructura básica para el juego de cartas */
+.game-container {
+    width: 100%;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}
+
+.card-table {
+    width: 90%;
+    max-width: 1000px;
+    height: 80vh;
+    position: relative;
+    border: 4px solid #8B0000;
+    border-radius: 10px;
+    box-shadow: 0 0 20px rgba(0,0,0,0.5);
+}
+
+.player-area {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 80%;
+    height: 150px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
