@@ -576,11 +576,332 @@ def detectar_por_cuadricula_inteligente(imagen, num_sprites_total=None, num_hori
     
     return []
 
+def detectar_color_dominante(imagen, num_colores=10):
+    """
+    Detecta el color más dominante/frecuente en una imagen.
+    Agrupa colores similares para encontrar el verdadero color dominante.
+    
+    Args:
+        imagen: Imagen PIL
+        num_colores: Número de colores top a considerar
+    
+    Returns:
+        Tupla (R, G, B) del color dominante
+    """
+    if imagen.mode == 'RGBA':
+        rgb = imagen.convert('RGB')
+    else:
+        rgb = imagen.convert('RGB')
+    
+    datos = np.array(rgb)
+    alto, ancho = datos.shape[:2]
+    
+    # Aplanar a lista de píxeles (N, 3)
+    pixeles = datos.reshape(-1, 3)
+    
+    # Cuantizar colores a bloques de 8 para agrupar similares
+    pixeles_cuant = (pixeles // 8) * 8
+    
+    # Convertir cada pixel a una tupla hasheable
+    colores_str = [tuple(p) for p in pixeles_cuant]
+    
+    # Contar frecuencias
+    from collections import Counter
+    conteo = Counter(colores_str)
+    
+    # Los N colores más comunes
+    top_colores = conteo.most_common(num_colores)
+    
+    print(f"\nAnálisis de colores dominantes:")
+    total = alto * ancho
+    for color, cantidad in top_colores[:5]:
+        porcentaje = 100 * cantidad / total
+        print(f"  RGB{color}: {cantidad} píxeles ({porcentaje:.1f}%)")
+    
+    # El más frecuente es el dominante
+    color_dominante = top_colores[0][0]
+    porcentaje_dom = 100 * top_colores[0][1] / total
+    
+    # Calcular el color real promedio (no cuantizado) de los píxeles que caen en ese grupo
+    mascara = np.all(pixeles_cuant == np.array(color_dominante), axis=1)
+    color_real = np.mean(pixeles[mascara], axis=0).astype(int)
+    
+    print(f"\n→ Color dominante detectado: RGB({color_real[0]}, {color_real[1]}, {color_real[2]}) ({porcentaje_dom:.1f}% de la imagen)")
+    
+    return tuple(color_real)
+
+def dividir_por_color_definido(imagen, color_separador=None, tolerancia=30, min_area=50, min_ancho=5, min_alto=5):
+    """
+    Divide sprites usando un color como separador/fondo.
+    Todo lo que NO sea ese color se agrupa en sprites individuales.
+    Si no se especifica color, se auto-detecta el color dominante de la imagen.
+    
+    Args:
+        imagen: Imagen PIL a procesar
+        color_separador: Tupla (R, G, B) del color separador, o None para auto-detectar
+        tolerancia: Tolerancia para la detección del color (0-255)
+        min_area: Área mínima en píxeles para considerar un sprite válido
+        min_ancho: Ancho mínimo para un sprite válido
+        min_alto: Alto mínimo para un sprite válido
+    
+    Returns:
+        Lista de sprites (imágenes PIL con fondo transparente)
+    """
+    if imagen.mode != 'RGBA':
+        imagen = imagen.convert('RGBA')
+    
+    datos = np.array(imagen)
+    alto, ancho = datos.shape[:2]
+    
+    # Auto-detectar color dominante si no se especificó
+    if color_separador is None:
+        color_separador = detectar_color_dominante(imagen)
+    
+    color_separador = np.array(color_separador[:3], dtype=float)
+    print(f"\nColor separador: RGB({int(color_separador[0])}, {int(color_separador[1])}, {int(color_separador[2])})")
+    print(f"Tolerancia: {tolerancia}")
+    
+    # Calcular distancia euclidiana de cada píxel al color separador
+    r_diff = (datos[:, :, 0].astype(float) - color_separador[0]) ** 2
+    g_diff = (datos[:, :, 1].astype(float) - color_separador[1]) ** 2
+    b_diff = (datos[:, :, 2].astype(float) - color_separador[2]) ** 2
+    diferencia = np.sqrt(r_diff + g_diff + b_diff)
+    
+    # Máscara: True = NO es el color separador (es sprite)
+    es_sprite = diferencia > tolerancia
+    
+    total_pixeles = alto * ancho
+    pixeles_fondo = np.sum(~es_sprite)
+    pixeles_sprite = np.sum(es_sprite)
+    print(f"Píxeles de fondo (color separador): {pixeles_fondo} ({100*pixeles_fondo/total_pixeles:.1f}%)")
+    print(f"Píxeles de sprite (resto): {pixeles_sprite} ({100*pixeles_sprite/total_pixeles:.1f}%)")
+    
+    # Etiquetar regiones conectadas de sprites
+    etiquetas, num_regiones = ndimage.label(es_sprite)
+    print(f"Regiones conectadas detectadas: {num_regiones}")
+    
+    # Crear imagen con fondo transparente
+    imagen_transparente = datos.copy()
+    imagen_transparente[~es_sprite, 3] = 0  # Hacer transparente el color separador
+    
+    # Rellenar huecos internos de cada sprite
+    from scipy.ndimage import binary_fill_holes
+    
+    sprites_info = []
+    for i in range(1, num_regiones + 1):
+        region = etiquetas == i
+        area = np.sum(region)
+        
+        # Encontrar bounding box
+        filas = np.any(region, axis=1)
+        cols = np.any(region, axis=0)
+        
+        if not np.any(filas) or not np.any(cols):
+            continue
+        
+        y1 = np.argmax(filas)
+        y2 = len(filas) - np.argmax(filas[::-1])
+        x1 = np.argmax(cols)
+        x2 = len(cols) - np.argmax(cols[::-1])
+        
+        ancho_r = x2 - x1
+        alto_r = y2 - y1
+        
+        if ancho_r < min_ancho or alto_r < min_alto or area < min_area:
+            print(f"  ⊗ Región {i}: {ancho_r}x{alto_r}px, área={area}, descartada (muy pequeña)")
+            continue
+        
+        sprites_info.append({
+            'id': i,
+            'bbox': (x1, y1, x2, y2),
+            'ancho': ancho_r,
+            'alto': alto_r,
+            'area': area,
+            'region': region
+        })
+    
+    # Ordenar por posición (arriba-abajo, izquierda-derecha)
+    sprites_info.sort(key=lambda s: (s['bbox'][1], s['bbox'][0]))
+    
+    print(f"\n{len(sprites_info)} sprites válidos encontrados")
+    
+    # Extraer cada sprite
+    sprites = []
+    for info in sprites_info:
+        x1, y1, x2, y2 = info['bbox']
+        
+        # Rellenar huecos internos del sprite para capturar detalles internos
+        region_rellena = binary_fill_holes(info['region'])
+        
+        # Crear una copia con transparencia aplicada solo fuera de la región rellena
+        sprite_datos = datos[y1:y2, x1:x2].copy()
+        region_crop = region_rellena[y1:y2, x1:x2]
+        
+        # Asegurar RGBA
+        if sprite_datos.shape[2] == 3:
+            alpha_channel = np.full((sprite_datos.shape[0], sprite_datos.shape[1], 1), 255, dtype=np.uint8)
+            sprite_datos = np.concatenate([sprite_datos, alpha_channel], axis=2)
+        
+        # Hacer transparente lo que no es parte del sprite
+        sprite_datos[~region_crop, 3] = 0
+        
+        sprite_img = Image.fromarray(sprite_datos, 'RGBA')
+        sprites.append(sprite_img)
+        print(f"  ✓ Sprite {len(sprites)}: {info['ancho']}x{info['alto']}px, área={info['area']}, pos=({x1},{y1})")
+    
+    return sprites
+
+def refinar_sprites(directorio_entrada="output", directorio_salida="refined",
+                    color_fondo=None, tolerancia=30):
+    """
+    Recorre los sprites de una carpeta, detecta restos de color de fondo
+    y los elimina, guardando las versiones limpias en otra carpeta.
+    
+    Si no se especifica color_fondo, lo auto-detecta analizando todos los sprites
+    para encontrar el color no-transparente más frecuente que aparece en los bordes.
+    
+    Args:
+        directorio_entrada: Carpeta con los sprites a refinar
+        directorio_salida: Carpeta donde guardar los sprites refinados
+        color_fondo: Tupla (R, G, B) del color de fondo a eliminar, o None para auto-detectar
+        tolerancia: Tolerancia para la detección del color (0-255)
+    """
+    from collections import Counter
+    
+    # Buscar todas las imágenes PNG en la carpeta de entrada
+    archivos = sorted([f for f in os.listdir(directorio_entrada) if f.lower().endswith('.png')])
+    
+    if not archivos:
+        print(f"No se encontraron imágenes PNG en '{directorio_entrada}'")
+        return
+    
+    print(f"Encontrados {len(archivos)} sprites en '{directorio_entrada}'")
+    
+    # Cargar todas las imágenes
+    imagenes = []
+    for archivo in archivos:
+        ruta = os.path.join(directorio_entrada, archivo)
+        img = Image.open(ruta).convert('RGBA')
+        imagenes.append((archivo, img))
+    
+    # Auto-detectar color de fondo si no se especificó
+    if color_fondo is None:
+        print("\nAuto-detectando color de fondo residual...")
+        todos_colores_borde = []
+        
+        for archivo, img in imagenes:
+            datos = np.array(img)
+            alto, ancho = datos.shape[:2]
+            alpha = datos[:, :, 3]
+            
+            # Recoger píxeles de los bordes que NO sean transparentes
+            for y in range(alto):
+                for x in range(ancho):
+                    # Solo bordes (primera/última fila/columna)
+                    es_borde = (y <= 1 or y >= alto - 2 or x <= 1 or x >= ancho - 2)
+                    if es_borde and alpha[y, x] > 20:
+                        color = tuple((datos[y, x, :3] // 8) * 8)  # cuantizar
+                        todos_colores_borde.append(color)
+        
+        if not todos_colores_borde:
+            print("No se detectaron píxeles de borde opacos, intentando con todos los píxeles...")
+            # Fallback: buscar el color más frecuente global entre todos los sprites
+            for archivo, img in imagenes:
+                datos = np.array(img)
+                alpha = datos[:, :, 3]
+                opacos = alpha > 20
+                if np.any(opacos):
+                    pixeles = datos[opacos, :3]
+                    cuant = (pixeles // 8) * 8
+                    for p in cuant:
+                        todos_colores_borde.append(tuple(p))
+        
+        if not todos_colores_borde:
+            print("No se pudo detectar ningún color de fondo. Abortando.")
+            return
+        
+        conteo = Counter(todos_colores_borde)
+        top_colores = conteo.most_common(5)
+        
+        print("Colores más frecuentes en bordes:")
+        for color, cantidad in top_colores:
+            print(f"  RGB{color}: {cantidad} píxeles")
+        
+        # Tomar el más frecuente y calcular su color real promedio
+        color_cuant = top_colores[0][0]
+        # Recalcular promedio real
+        colores_reales = []
+        for archivo, img in imagenes:
+            datos = np.array(img)
+            alpha = datos[:, :, 3]
+            alto, ancho = datos.shape[:2]
+            for y in range(alto):
+                for x in range(ancho):
+                    es_borde = (y <= 1 or y >= alto - 2 or x <= 1 or x >= ancho - 2)
+                    if es_borde and alpha[y, x] > 20:
+                        c = tuple((datos[y, x, :3] // 8) * 8)
+                        if c == color_cuant:
+                            colores_reales.append(datos[y, x, :3].astype(float))
+        
+        if colores_reales:
+            color_fondo = tuple(np.mean(colores_reales, axis=0).astype(int))
+        else:
+            color_fondo = color_cuant
+        
+        print(f"\n→ Color de fondo detectado: RGB{color_fondo}")
+    
+    color_fondo_arr = np.array(color_fondo[:3], dtype=float)
+    
+    # Crear directorio de salida
+    os.makedirs(directorio_salida, exist_ok=True)
+    
+    print(f"\nRefinando sprites (eliminando RGB({int(color_fondo_arr[0])}, {int(color_fondo_arr[1])}, {int(color_fondo_arr[2])}) con tolerancia {tolerancia})...")
+    print("=" * 60)
+    
+    total_limpiados = 0
+    for archivo, img in imagenes:
+        datos = np.array(img)
+        
+        # Calcular distancia al color de fondo
+        r_diff = (datos[:, :, 0].astype(float) - color_fondo_arr[0]) ** 2
+        g_diff = (datos[:, :, 1].astype(float) - color_fondo_arr[1]) ** 2
+        b_diff = (datos[:, :, 2].astype(float) - color_fondo_arr[2]) ** 2
+        diferencia = np.sqrt(r_diff + g_diff + b_diff)
+        
+        # Píxeles que coinciden con el fondo
+        es_fondo = diferencia <= tolerancia
+        pixeles_fondo = np.sum(es_fondo & (datos[:, :, 3] > 0))
+        
+        if pixeles_fondo > 0:
+            # Hacer transparentes los píxeles de fondo
+            datos[es_fondo, 3] = 0
+            total_limpiados += 1
+            
+            # Recortar bordes transparentes
+            img_limpia = Image.fromarray(datos, 'RGBA')
+            bbox = img_limpia.getbbox()
+            if bbox:
+                img_limpia = img_limpia.crop(bbox)
+            
+            print(f"  ✓ {archivo}: {pixeles_fondo} píxeles de fondo eliminados -> {img_limpia.size[0]}x{img_limpia.size[1]}px")
+        else:
+            img_limpia = img
+            print(f"  - {archivo}: sin cambios (ya limpio)")
+        
+        # Guardar
+        ruta_salida = os.path.join(directorio_salida, archivo)
+        img_limpia.save(ruta_salida)
+    
+    print(f"\n{'='*60}")
+    print(f"✓ ¡COMPLETADO! {len(archivos)} sprites refinados ({total_limpiados} con fondo eliminado)")
+    print(f"  Guardados en '{directorio_salida}'")
+    print(f"{'='*60}")
+
 def procesar_imagen_completo(ruta_entrada, directorio_salida="output", 
                              color_fondo=None, tolerancia=30, 
                              num_horizontal=None, num_vertical=None,
                              nombre_base="sprite", recortar=True, auto_detectar=True,
-                             gap_minimo=2, min_ancho=8):
+                             gap_minimo=2, min_ancho=8, separar_color=None):
     """
     Procesa una imagen: quita el fondo y la divide en sprites.
     
@@ -600,6 +921,37 @@ def procesar_imagen_completo(ruta_entrada, directorio_salida="output",
         print(f"Cargando imagen: {ruta_entrada}")
         imagen = Image.open(ruta_entrada)
         print(f"Tamaño original: {imagen.size[0]}x{imagen.size[1]} pixels")
+        
+        # Modo especial: dividir por color definido (sin quitar fondo primero)
+        if separar_color is not None:
+            print("\n" + "="*60)
+            print("MODO: División por color separador")
+            print("="*60)
+            
+            # Crear directorio de salida
+            os.makedirs(directorio_salida, exist_ok=True)
+            
+            # Si es 'auto', pasar None para que auto-detecte; si es tupla, usar ese color
+            color_param = None if separar_color == 'auto' else separar_color
+            
+            sprites = dividir_por_color_definido(
+                imagen, color_param, tolerancia,
+                min_area=50, min_ancho=min_ancho, min_alto=8
+            )
+            
+            # Guardar sprites
+            print("\n" + "="*60)
+            print("Guardando sprites...")
+            print("="*60)
+            for i, sprite in enumerate(sprites, 1):
+                ruta_sprite = os.path.join(directorio_salida, f"{nombre_base}_{i:02d}.png")
+                sprite.save(ruta_sprite)
+                print(f"  ✓ Sprite {i:2d}: {sprite.size[0]:3d}x{sprite.size[1]:3d}px -> {os.path.basename(ruta_sprite)}")
+            
+            print(f"\n{'='*60}")
+            print(f"✓ ¡COMPLETADO! {len(sprites)} sprites guardados en '{directorio_salida}'")
+            print(f"{'='*60}")
+            return
         
         # Paso 1: Quitar el fondo
         print("\n" + "="*60)
@@ -669,6 +1021,16 @@ Ejemplos de uso:
   python all.py imagen.png --horizontal 6 --vertical 1
   python all.py imagen.png --horizontal 4 --vertical 2
   
+  # Dividir por color dominante (auto-detecta el color global)
+  python all.py imagen.png --separar-color                   # auto-detecta
+  python all.py imagen.png --separar-color 0 255 0           # fondo verde manual
+  python all.py imagen.png --separar-color --tolerancia 50   # auto + tolerancia
+  
+  # Refinar: quitar restos de fondo de los sprites ya cortados
+  python all.py dummy --refinar                              # auto-detecta color
+  python all.py dummy --refinar --refinar-color 0 128 0      # color manual
+  python all.py dummy --refinar --salida output --refinar-salida refined
+  
   # Con parámetros personalizados
   python all.py imagen.png --min-ancho 10 --tolerancia 50
   python all.py imagen.png --color 90 90 90 --salida mis_sprites
@@ -695,8 +1057,37 @@ Ejemplos de uso:
                         help="Mínimo de columnas vacías entre sprites (por defecto: 2)")
     parser.add_argument("--min-ancho", type=int, default=8,
                         help="Ancho mínimo de un sprite en pixels (por defecto: 8)")
+    parser.add_argument("--separar-color", nargs='*', type=int, metavar="V", default=None,
+                        help="Dividir por color separador. Sin valores: auto-detecta el color dominante. Con 3 valores R G B: usa ese color (ej: --separar-color 0 255 0)")
+    parser.add_argument("--refinar", action="store_true",
+                        help="Refinar sprites: quitar restos de color de fondo de los sprites en la carpeta de salida")
+    parser.add_argument("--refinar-color", nargs=3, type=int, metavar=("R", "G", "B"),
+                        help="Color RGB a quitar en el refinado (ej: --refinar-color 0 128 0). Si no se pone, se auto-detecta")
+    parser.add_argument("--refinar-salida", default="refined",
+                        help="Carpeta de salida para sprites refinados (por defecto: 'refined')")
     
     args = parser.parse_args()
+    
+    # Modo refinar: quitar fondo residual de sprites ya cortados
+    if args.refinar:
+        color_ref = tuple(args.refinar_color) if args.refinar_color else None
+        refinar_sprites(
+            directorio_entrada=args.salida,
+            directorio_salida=args.refinar_salida,
+            color_fondo=color_ref,
+            tolerancia=args.tolerancia
+        )
+        return
+    
+    # Procesar --separar-color: None=no usar, []=auto-detectar, [R,G,B]=color manual
+    separar_color_valor = None
+    if args.separar_color is not None:
+        if len(args.separar_color) == 0:
+            separar_color_valor = 'auto'  # señal para auto-detectar
+        elif len(args.separar_color) == 3:
+            separar_color_valor = tuple(args.separar_color)
+        else:
+            parser.error("--separar-color requiere 0 valores (auto-detectar) o 3 valores R G B")
     
     procesar_imagen_completo(
         args.imagen,
@@ -709,7 +1100,8 @@ Ejemplos de uso:
         not args.no_recortar,
         not args.manual and not (args.num_horizontal or args.num_vertical),  # auto_detectar solo si no hay dimensiones
         args.gap,
-        args.min_ancho
+        args.min_ancho,
+        separar_color_valor
     )
 
 if __name__ == "__main__":
